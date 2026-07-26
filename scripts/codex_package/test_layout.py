@@ -15,6 +15,38 @@ from codex_package.targets import TARGET_SPECS
 
 
 class PackageLayoutTest(unittest.TestCase):
+    def test_codex_akram_package_uses_fork_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = root / "package"
+            package_dir.mkdir()
+            inputs = PackageInputs(
+                entrypoint_bin=touch_executable(root / "codex-akram"),
+                code_mode_host_bin=touch_executable(root / "codex-code-mode-host"),
+                rg_bin=touch_executable(root / "rg"),
+                zsh_bin=None,
+                bwrap_bin=None,
+                codex_command_runner_bin=None,
+                codex_windows_sandbox_setup_bin=None,
+            )
+
+            build_package_dir(
+                package_dir,
+                "0.145.0-ak.0.1",
+                PACKAGE_VARIANTS["codex-akram"],
+                TARGET_SPECS["aarch64-apple-darwin"],
+                inputs,
+            )
+            validate_package_dir(
+                package_dir,
+                PACKAGE_VARIANTS["codex-akram"],
+                TARGET_SPECS["aarch64-apple-darwin"],
+                include_zsh=False,
+            )
+
+            self.assertTrue((package_dir / "bin" / "codex-akram").is_file())
+            self.assertFalse((package_dir / "bin" / "codex").exists())
+
     def test_app_server_package_places_code_mode_host_beside_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

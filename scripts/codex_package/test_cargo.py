@@ -28,6 +28,20 @@ class SourceBinariesForTargetTest(unittest.TestCase):
             [],
         )
 
+    def test_codex_akram_package_builds_fork_binary(self) -> None:
+        self.assertEqual(
+            source_binaries_for_target(
+                TARGET_SPECS["aarch64-apple-darwin"],
+                PACKAGE_VARIANTS["codex-akram"],
+                build_entrypoint=True,
+                build_code_mode_host=False,
+                build_bwrap=False,
+                build_codex_command_runner=False,
+                build_codex_windows_sandbox_setup=False,
+            ),
+            ["codex-akram"],
+        )
+
     def test_linux_package_with_prebuilt_entrypoint_and_bwrap_builds_nothing(
         self,
     ) -> None:

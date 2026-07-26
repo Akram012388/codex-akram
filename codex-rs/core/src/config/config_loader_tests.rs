@@ -2337,6 +2337,127 @@ async fn project_layers_prefer_closest_cwd() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn project_akram_overlay_has_higher_priority_than_standard_project_config()
+-> std::io::Result<()> {
+    let tmp = tempdir()?;
+    let project_root = tmp.path().join("project");
+    let standard_dir = project_root.join(".codex");
+    let overlay_dir = project_root.join(".codex-akram");
+    tokio::fs::create_dir_all(&standard_dir).await?;
+    tokio::fs::create_dir_all(&overlay_dir).await?;
+    tokio::fs::write(project_root.join(".git"), "gitdir: here").await?;
+    tokio::fs::write(
+        standard_dir.join(CONFIG_TOML_FILE),
+        "foo = \"standard\"\nmodel_instructions_file = \"instructions.txt\"\n",
+    )
+    .await?;
+    tokio::fs::write(
+        overlay_dir.join(CONFIG_TOML_FILE),
+        "foo = \"overlay\"\nmodel_instructions_file = \"instructions.txt\"\n",
+    )
+    .await?;
+    tokio::fs::write(
+        standard_dir.join("instructions.txt"),
+        "standard instructions",
+    )
+    .await?;
+    tokio::fs::write(overlay_dir.join("instructions.txt"), "overlay instructions").await?;
+
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+    make_config_for_test(
+        &codex_home,
+        &project_root,
+        TrustLevel::Trusted,
+        /*project_root_markers*/ None,
+    )
+    .await?;
+
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home)
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(project_root.clone()),
+            ..ConfigOverrides::default()
+        })
+        .build()
+        .await?;
+    let project_layers = config
+        .config_layer_stack
+        .layers_high_to_low()
+        .into_iter()
+        .filter_map(|layer| match &layer.name {
+            ConfigLayerSource::Project { dot_codex_folder } => {
+                Some(dot_codex_folder.as_path().to_path_buf())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(project_layers, vec![overlay_dir, standard_dir]);
+    assert_eq!(
+        config.base_instructions.as_deref(),
+        Some("overlay instructions")
+    );
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("foo")
+            .and_then(TomlValue::as_str),
+        Some("overlay")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_project_akram_overlay_is_blocked_when_untrusted() -> std::io::Result<()> {
+    let tmp = tempdir()?;
+    let project_root = tmp.path().join("project");
+    let overlay_dir = project_root.join(".codex-akram");
+    tokio::fs::create_dir_all(&overlay_dir).await?;
+    tokio::fs::write(project_root.join(".git"), "gitdir: here").await?;
+    tokio::fs::write(overlay_dir.join(CONFIG_TOML_FILE), "foo =").await?;
+
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+    make_config_for_test(
+        &codex_home,
+        &project_root,
+        TrustLevel::Untrusted,
+        /*project_root_markers*/ None,
+    )
+    .await?;
+    let cwd = AbsolutePathBuf::from_absolute_path(&project_root)?;
+    let layers = load_config_layers_state(
+        LOCAL_FS.as_ref(),
+        &codex_home,
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        LoaderOverrides::default(),
+        &codex_config::NoopThreadConfigLoader,
+    )
+    .await?;
+    let overlay = layers
+        .get_layers(
+            ConfigLayerStackOrdering::HighestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
+        .into_iter()
+        .find(|layer| {
+            matches!(
+                &layer.name,
+                ConfigLayerSource::Project { dot_codex_folder }
+                    if dot_codex_folder.as_path() == overlay_dir
+            )
+        })
+        .expect("overlay layer");
+
+    assert!(overlay.disabled_reason.is_some());
+    assert_eq!(overlay.config, TomlValue::Table(toml::map::Map::new()));
+    Ok(())
+}
+
+#[tokio::test]
 async fn linked_worktree_project_layers_keep_worktree_config_but_use_root_repo_hooks()
 -> std::io::Result<()> {
     let tmp = tempdir()?;

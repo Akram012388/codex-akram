@@ -23,19 +23,20 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         use ratatui_macros::line;
         use ratatui_macros::text;
-        let update_instruction = if let Some(update_action) = self.update_action {
-            line!["Run ", update_action.command_str().cyan(), " to update."]
+        let update_instruction = if self.update_action.is_some() {
+            line!["Run ", "codex-akram update".cyan(), " to update."]
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                codex_akram_identity::GITHUB_LATEST_RELEASE_URL
+                    .cyan()
+                    .underlined(),
                 " for installation options."
             ]
         };
 
         let content = text![
             line![
-                "✨\u{200A}".bold().cyan(),
                 "Update available!".bold().cyan(),
                 " ",
                 format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
@@ -43,7 +44,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
+            codex_akram_identity::GITHUB_LATEST_RELEASE_URL
                 .cyan()
                 .underlined(),
         ];
@@ -57,10 +58,13 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let update_instruction = if let Some(update_action) = self.update_action {
-            format!("Run {} to update.", update_action.command_str())
+        let update_instruction = if self.update_action.is_some() {
+            "Run codex-akram update to update.".to_string()
         } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+            format!(
+                "See {} for installation options.",
+                codex_akram_identity::GITHUB_LATEST_RELEASE_URL
+            )
         };
         vec![
             Line::from("Update available!"),
@@ -68,7 +72,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             Line::from(update_instruction),
             Line::from(""),
             Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
+            Line::from(codex_akram_identity::GITHUB_LATEST_RELEASE_URL),
         ]
     }
 

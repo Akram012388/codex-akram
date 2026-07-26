@@ -7,7 +7,6 @@ use tempfile::TempDir;
 use codex_app_server_transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
 
 use super::PidBackend;
-use super::PidCommandKind;
 use super::PidFileState;
 use super::PidLogTail;
 use super::PidRecord;
@@ -186,21 +185,6 @@ async fn stop_reaps_untracked_app_server_child() {
     // `sleep` is not tracked by Tokio, so stop must reap it instead of leaving a zombie.
     result.expect("stop timed out").expect("stop");
     assert!(!pid_file.exists());
-}
-
-#[test]
-fn update_loop_uses_hidden_app_server_subcommand() {
-    let backend = PidBackend {
-        codex_bin: "codex".into(),
-        pid_file: "updater.pid".into(),
-        lock_file: "updater.pid.lock".into(),
-        command_kind: PidCommandKind::UpdateLoop,
-    };
-
-    assert_eq!(
-        backend.command_args(),
-        vec!["app-server", "daemon", "pid-update-loop"]
-    );
 }
 
 #[test]

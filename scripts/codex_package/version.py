@@ -27,3 +27,14 @@ def read_workspace_version() -> str:
                     return match.group(1)
 
     raise RuntimeError(f"Could not find [workspace.package].version in {cargo_toml}")
+
+
+def read_akram_version() -> str:
+    cargo_toml = REPO_ROOT / "codex-rs" / "akram-identity" / "Cargo.toml"
+    with open(cargo_toml, encoding="utf-8") as fh:
+        for line in fh:
+            match = WORKSPACE_VERSION_PATTERN.match(line.strip())
+            if match is not None:
+                return match.group(1)
+
+    raise RuntimeError(f"Could not find package version in {cargo_toml}")

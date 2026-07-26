@@ -16,6 +16,7 @@ from .targets import PackageInputs
 from .targets import default_target
 from .targets import resolve_input_path
 from .zsh import resolve_zsh_bin
+from .version import read_akram_version
 from .version import read_workspace_version
 
 
@@ -36,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--variant",
         choices=sorted(PACKAGE_VARIANTS),
-        default="codex",
+        default="codex-akram",
         help="Package variant to build.",
     )
     parser.add_argument(
@@ -177,7 +178,11 @@ def main() -> int:
             "--codex-windows-sandbox-setup-bin",
         ),
     )
-    version = read_workspace_version()
+    version = (
+        read_akram_version()
+        if variant.name == "codex-akram"
+        else read_workspace_version()
+    )
     inputs = PackageInputs(
         entrypoint_bin=source_outputs.entrypoint_bin,
         code_mode_host_bin=source_outputs.code_mode_host_bin,
@@ -196,9 +201,9 @@ def main() -> int:
     for archive_output in args.archive_output:
         archive_path = archive_output.resolve()
         write_archive(package_dir, archive_path, force=args.force)
-        print(f"Built Codex package archive at {archive_path}")
+        print(f"Built {variant.name} package archive at {archive_path}")
 
-    print(f"Built Codex package directory at {package_dir}")
+    print(f"Built {variant.name} package directory at {package_dir}")
     return 0
 
 

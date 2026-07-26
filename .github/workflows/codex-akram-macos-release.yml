@@ -1,0 +1,102 @@
+name: codex-akram macOS release
+
+on:
+  push:
+    tags:
+      - "v*.*.*-ak.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing codex-akram release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-akram-macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Validate release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' codex-rs/akram-identity/Cargo.toml | head -n 1)"
+          test "$RELEASE_TAG" = "v$version"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-ak\.[0-9]+\.[0-9]+$ ]]
+
+      - name: Configure V8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-apple-darwin
+
+      - name: Build release binaries
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target "$TARGET" \
+            --bin codex-akram \
+            --bin codex-code-mode-host
+
+      - name: Build package and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 scripts/build_codex_package.py \
+            --variant codex-akram \
+            --target "$TARGET" \
+            --cargo-profile release \
+            --package-dir dist/package \
+            --archive-output "dist/codex-akram-package-${TARGET}.tar.gz" \
+            --entrypoint-bin "codex-rs/target/${TARGET}/release/codex-akram" \
+            --code-mode-host-bin "codex-rs/target/${TARGET}/release/codex-code-mode-host"
+          cd dist
+          shasum -a 256 "codex-akram-package-${TARGET}.tar.gz" \
+            > codex-akram-package_SHA256SUMS
+
+      - name: Smoke test packaged CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_home="$(mktemp -d)"
+          export CODEX_AKRAM_HOME="$smoke_home/state"
+          export CODEX_AKRAM_SQLITE_HOME="$smoke_home/sqlite"
+          mkdir -p "$CODEX_AKRAM_HOME" "$CODEX_AKRAM_SQLITE_HOME"
+          bin="dist/package/bin/codex-akram"
+          "$bin" --version | grep -F "${RELEASE_TAG#v}" >/dev/null
+          "$bin" --help | grep -F "codex-akram" >/dev/null
+          if "$bin" login status; then
+            echo "fresh package unexpectedly found existing authentication" >&2
+            exit 1
+          fi
+          "$bin" doctor --json > "$smoke_home/doctor.json" || true
+          grep -F '"codexVersion"' "$smoke_home/doctor.json" >/dev/null
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            dist/codex-akram-package-aarch64-apple-darwin.tar.gz
+            dist/codex-akram-package_SHA256SUMS

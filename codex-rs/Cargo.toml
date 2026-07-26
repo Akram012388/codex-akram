@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "akram-identity",
     "aws-auth",
     "analytics",
     "agent-graph-store",
@@ -139,6 +140,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 # Internal
 app_test_support = { path = "app-server/tests/common" }
+codex-akram-identity = { path = "akram-identity" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }

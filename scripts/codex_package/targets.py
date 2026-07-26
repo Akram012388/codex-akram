@@ -48,6 +48,11 @@ class PackageInputs:
 
 
 PACKAGE_VARIANTS: dict[str, PackageVariant] = {
+    "codex-akram": PackageVariant(
+        name="codex-akram",
+        cargo_bin="codex-akram",
+        executable_stem="codex-akram",
+    ),
     "codex": PackageVariant(
         name="codex",
         cargo_bin="codex",

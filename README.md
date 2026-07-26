@@ -1,71 +1,42 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# codex-akram
 
----
+codex-akram is an independent, opinionated fork of the open source OpenAI Codex CLI. It is maintained by Akram, is not affiliated with or endorsed by OpenAI, and does not use OpenAI logos or visual identity.
 
-## Quickstart
+The initial release is based on upstream `rust-v0.145.0` at commit `25af12f7`. It keeps OpenAI service compatibility while providing a separate executable, runtime identity, state directory, authentication store, package channel, and update path.
 
-### Installing and running Codex CLI
+## Install
 
-Run the following on Mac or Linux to install Codex CLI:
+The initial release supports Apple Silicon Macs. It is unsigned and every release archive is accompanied by SHA-256 checksums.
 
 ```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Akram012388/codex-akram/main/scripts/install/install-akram.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
+The installer adds `~/.local/bin/codex-akram` and stores managed releases under `~/.codex-akram`. It does not install a `codex` alias or import `~/.codex`.
+
+Run:
 
 ```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+codex-akram
 ```
 
-Codex CLI can also be installed via the following package managers:
+Use `codex-akram update` to explicitly install a newer codex-akram release when one is available.
+
+## Isolation and project configuration
+
+User state defaults to `~/.codex-akram`. Override it with `CODEX_AKRAM_HOME`, and override SQLite storage with `CODEX_AKRAM_SQLITE_HOME`. The official `CODEX_HOME` and `CODEX_SQLITE_HOME` variables do not redirect this fork.
+
+Trusted repositories load standard `.codex` project configuration first, then apply `.codex-akram` as the higher-priority overlay. Both directories remain behind the existing project trust gate.
+
+## Build
 
 ```shell
-# Install using npm
-npm install -g @openai/codex
+cd codex-rs
+cargo build --bin codex-akram
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
+Repository development follows the checks documented in [AGENTS.md](AGENTS.md).
 
-Then simply run `codex` to get started.
+## Attribution and license
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+This fork retains the upstream [Apache-2.0 License](LICENSE) and [NOTICE](NOTICE). OpenAI, Codex, and related names are the property of their respective owners.

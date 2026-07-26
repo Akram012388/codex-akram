@@ -543,7 +543,7 @@ async fn external_agent_config_import_sends_completion_notification_for_sync_onl
         .without_auto_env()
         .with_env_overrides(&[
             ("HOME", Some(home_dir.as_str())),
-            ("CODEX_SQLITE_HOME", Some(sqlite_home_dir.as_str())),
+            ("CODEX_AKRAM_SQLITE_HOME", Some(sqlite_home_dir.as_str())),
         ])
         .build()
         .await?;

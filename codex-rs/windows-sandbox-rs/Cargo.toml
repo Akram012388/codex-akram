@@ -22,6 +22,7 @@ path = "src/bin/command_runner/main.rs"
 workspace = true
 
 [dependencies]
+codex-akram-identity = { workspace = true }
 anyhow = "1.0"
 base64 = { workspace = true }
 chrono = { version = "0.4.42", default-features = false, features = [

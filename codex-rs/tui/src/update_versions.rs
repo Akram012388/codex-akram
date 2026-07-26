@@ -1,13 +1,12 @@
 pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => Some(l > c),
-        _ => None,
-    }
+    let latest = semver::Version::parse(latest.trim()).ok()?;
+    let current = semver::Version::parse(current.trim()).ok()?;
+    Some(latest > current)
 }
 
 pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
     latest_tag_name
-        .strip_prefix("rust-v")
+        .strip_prefix('v')
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
 }
@@ -17,11 +16,8 @@ pub(crate) fn is_source_build_version(version: &str) -> bool {
 }
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
-    let maj = iter.next()?.parse::<u64>().ok()?;
-    let min = iter.next()?.parse::<u64>().ok()?;
-    let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
+    let version = semver::Version::parse(v.trim()).ok()?;
+    Some((version.major, version.minor, version.patch))
 }
 
 #[cfg(test)]
@@ -32,20 +28,20 @@ mod tests {
     #[test]
     fn extracts_version_from_latest_tag() {
         assert_eq!(
-            extract_version_from_latest_tag("rust-v1.5.0").expect("failed to parse version"),
-            "1.5.0"
+            extract_version_from_latest_tag("v0.145.0-ak.0.2").expect("failed to parse version"),
+            "0.145.0-ak.0.2"
         );
     }
 
     #[test]
     fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
+        assert!(extract_version_from_latest_tag("rust-v0.145.0").is_err());
     }
 
     #[test]
-    fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), None);
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), None);
+    fn fork_prerelease_versions_follow_semver_ordering() {
+        assert_eq!(is_newer("0.145.0-ak.0.2", "0.145.0-ak.0.1"), Some(true));
+        assert_eq!(is_newer("0.145.0-ak.0.1", "0.145.0"), Some(false));
     }
 
     #[test]

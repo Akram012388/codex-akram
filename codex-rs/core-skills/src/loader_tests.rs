@@ -284,13 +284,11 @@ async fn make_config_for_cwd(codex_home: &TempDir, cwd: PathBuf) -> TestConfig {
 }
 
 async fn load_skills_for_test(config: &TestConfig) -> SkillLoadOutcome {
-    // Keep unit tests hermetic by never scanning the real `$HOME/.agents/skills`.
     super::load_skills_from_roots(
         super::skill_roots_from_layer_stack(
             Arc::clone(&LOCAL_FS),
             &config.config_layer_stack,
             &config.cwd,
-            /*home_dir*/ None,
         )
         .await,
         /*plugin_skill_snapshots*/ None,
@@ -345,26 +343,16 @@ async fn skill_roots_from_layer_stack_maps_user_to_user_and_system_cache_and_sys
         ConfigRequirementsToml::default(),
     )?;
 
-    let home_folder_abs = home_folder.abs();
-    let got = skill_roots_from_layer_stack(
-        Arc::clone(&LOCAL_FS),
-        &stack,
-        &home_folder_abs,
-        Some(&home_folder_abs),
-    )
-    .await
-    .into_iter()
-    .map(|root| (root.scope, root.path.to_path_buf()))
-    .collect::<Vec<_>>();
+    let got = skill_roots_from_layer_stack(Arc::clone(&LOCAL_FS), &stack, &home_folder.abs())
+        .await
+        .into_iter()
+        .map(|root| (root.scope, root.path.to_path_buf()))
+        .collect::<Vec<_>>();
 
     assert_eq!(
         got,
         vec![
             (SkillScope::User, user_folder.join("skills")),
-            (
-                SkillScope::User,
-                home_folder.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME)
-            ),
             (
                 SkillScope::System,
                 user_folder.join("skills").join(".system")
@@ -413,28 +401,18 @@ async fn skill_roots_from_layer_stack_includes_disabled_project_layers() -> anyh
         ConfigRequirementsToml::default(),
     )?;
 
-    let home_folder_abs = home_folder.abs();
     let project_root_abs = project_root.abs();
-    let got = skill_roots_from_layer_stack(
-        Arc::clone(&LOCAL_FS),
-        &stack,
-        &project_root_abs,
-        Some(&home_folder_abs),
-    )
-    .await
-    .into_iter()
-    .map(|root| (root.scope, root.path.to_path_buf()))
-    .collect::<Vec<_>>();
+    let got = skill_roots_from_layer_stack(Arc::clone(&LOCAL_FS), &stack, &project_root_abs)
+        .await
+        .into_iter()
+        .map(|root| (root.scope, root.path.to_path_buf()))
+        .collect::<Vec<_>>();
 
     assert_eq!(
         got,
         vec![
             (SkillScope::Repo, dot_codex.join("skills")),
             (SkillScope::User, user_folder.join("skills")),
-            (
-                SkillScope::User,
-                home_folder.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME)
-            ),
             (
                 SkillScope::System,
                 user_folder.join("skills").join(".system")
@@ -446,8 +424,9 @@ async fn skill_roots_from_layer_stack_includes_disabled_project_layers() -> anyh
 }
 
 #[tokio::test]
-async fn loads_skills_from_home_agents_dir_for_user_scope() -> anyhow::Result<()> {
+async fn does_not_load_skills_from_shared_home_agents_dir() -> anyhow::Result<()> {
     let tmp = tempfile::tempdir()?;
+    let work_dir = tempfile::tempdir()?;
 
     let home_folder = tmp.path().join("home");
     let user_folder = home_folder.join("codex");
@@ -467,21 +446,15 @@ async fn loads_skills_from_home_agents_dir_for_user_scope() -> anyhow::Result<()
         ConfigRequirementsToml::default(),
     )?;
 
-    let skill_path = write_skill_at(
+    write_skill_at(
         &home_folder.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
         "agents-home",
         "agents-home-skill",
         "from home agents",
     );
 
-    let home_folder_abs = home_folder.abs();
-    let roots = skill_roots_from_layer_stack(
-        Arc::clone(&LOCAL_FS),
-        &stack,
-        &home_folder_abs,
-        Some(&home_folder_abs),
-    )
-    .await;
+    let roots =
+        skill_roots_from_layer_stack(Arc::clone(&LOCAL_FS), &stack, &work_dir.path().abs()).await;
     let outcome = load_skills_from_roots(
         roots,
         /*plugin_skill_snapshots*/ None,
@@ -493,20 +466,7 @@ async fn loads_skills_from_home_agents_dir_for_user_scope() -> anyhow::Result<()
         "unexpected errors: {:?}",
         outcome.errors
     );
-    assert_eq!(
-        outcome.skills,
-        vec![SkillMetadata {
-            name: "agents-home-skill".to_string(),
-            description: "from home agents".to_string(),
-            short_description: None,
-            interface: None,
-            dependencies: None,
-            policy: None,
-            path_to_skills_md: normalized(&skill_path),
-            scope: SkillScope::User,
-            plugin_id: None,
-        }]
-    );
+    assert!(outcome.skills.is_empty());
 
     Ok(())
 }
@@ -2828,10 +2788,6 @@ async fn skill_roots_include_admin_with_lowest_priority() {
     .into_iter()
     .map(|root| root.scope)
     .collect();
-    let mut expected = vec![SkillScope::User, SkillScope::System];
-    if home_dir().is_some() {
-        expected.insert(1, SkillScope::User);
-    }
-    expected.push(SkillScope::Admin);
+    let expected = vec![SkillScope::User, SkillScope::System, SkillScope::Admin];
     assert_eq!(scopes, expected);
 }

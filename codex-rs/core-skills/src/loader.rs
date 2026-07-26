@@ -31,7 +31,6 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
 use codex_utils_plugins::PluginSkillRoot;
-use dirs::home_dir;
 use discovery::DirectorySymlinkPolicy;
 use discovery::DiscoveredSkill;
 use discovery::HiddenDirectoryPolicy;
@@ -257,28 +256,24 @@ pub(crate) async fn skill_roots(
     plugin_skill_roots: Vec<PluginSkillRoot>,
     extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
-    let home_dir =
-        home_dir().and_then(|path| AbsolutePathBuf::from_absolute_path_checked(path).ok());
-    skill_roots_with_home_dir(
+    skill_roots_inner(
         fs,
         config_layer_stack,
         cwd,
-        home_dir.as_ref(),
         plugin_skill_roots,
         extra_skill_roots,
     )
     .await
 }
 
-async fn skill_roots_with_home_dir(
+async fn skill_roots_inner(
     fs: Option<Arc<dyn ExecutorFileSystem>>,
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
-    home_dir: Option<&AbsolutePathBuf>,
     plugin_skill_roots: Vec<PluginSkillRoot>,
     extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
-    let mut roots = skill_roots_from_layer_stack_inner(config_layer_stack, home_dir, fs.clone());
+    let mut roots = skill_roots_from_layer_stack_inner(config_layer_stack, fs.clone());
     roots.extend(plugin_skill_roots.into_iter().map(|root| SkillRoot {
         path: root.path,
         scope: SkillScope::User,
@@ -302,7 +297,6 @@ async fn skill_roots_with_home_dir(
 
 fn skill_roots_from_layer_stack_inner(
     config_layer_stack: &ConfigLayerStack,
-    home_dir: Option<&AbsolutePathBuf>,
     repo_fs: Option<Arc<dyn ExecutorFileSystem>>,
 ) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
@@ -339,18 +333,6 @@ fn skill_roots_from_layer_stack_inner(
                     plugin_namespace: None,
                     plugin_root: None,
                 });
-
-                // `$HOME/.agents/skills` (user-installed skills).
-                if let Some(home_dir) = home_dir {
-                    roots.push(SkillRoot {
-                        path: home_dir.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
-                        scope: SkillScope::User,
-                        file_system: Arc::clone(&LOCAL_FS),
-                        plugin_id: None,
-                        plugin_namespace: None,
-                        plugin_root: None,
-                    });
-                }
 
                 // Embedded system skills are cached under `$CODEX_HOME/skills/.system` and are a
                 // special case (not a config layer).
@@ -1211,17 +1193,8 @@ pub(crate) async fn skill_roots_from_layer_stack(
     fs: Arc<dyn ExecutorFileSystem>,
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
-    home_dir: Option<&AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
-    skill_roots_with_home_dir(
-        Some(fs),
-        config_layer_stack,
-        cwd,
-        home_dir,
-        Vec::new(),
-        Vec::new(),
-    )
-    .await
+    skill_roots_inner(Some(fs), config_layer_stack, cwd, Vec::new(), Vec::new()).await
 }
 
 #[cfg(test)]

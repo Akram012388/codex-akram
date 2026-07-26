@@ -97,11 +97,12 @@ async fn first_layer_config_error_from_entries(layers: &[ConfigLayerEntry]) -> O
 /// - system    `/etc/codex/config.toml` (Unix) or
 ///   `%ProgramData%\OpenAI\Codex\config.toml` (Windows)
 /// - cloud     enterprise-managed cloud config bundle fragments
-/// - user      `${CODEX_HOME}/config.toml`
-/// - profile   `${CODEX_HOME}/<name>.config.toml`, when selected
+/// - user      `${CODEX_AKRAM_HOME}/config.toml`
+/// - profile   `${CODEX_AKRAM_HOME}/<name>.config.toml`, when selected
 /// - cwd       `${PWD}/config.toml` (loaded but disabled when the directory is untrusted)
-/// - tree      parent directories up to root looking for `./.codex/config.toml` (loaded but disabled when untrusted)
-/// - repo      `$(git rev-parse --show-toplevel)/.codex/config.toml` (loaded but disabled when untrusted)
+/// - tree      parent directories up to root looking for `.codex/config.toml`, then
+///   `.codex-akram/config.toml` as a higher-priority overlay
+/// - repo      the same two trusted project layers at the repository root
 /// - runtime   e.g., --config flags, model selector in UI
 ///
 /// (*) Only available on macOS via managed device profiles.
@@ -903,7 +904,11 @@ impl ProjectTrustContext {
         }
     }
 
-    fn root_checkout_hooks_folder_for_dir(&self, dir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    fn root_checkout_hooks_folder_for_dir(
+        &self,
+        dir: &AbsolutePathBuf,
+        project_config_dir: &str,
+    ) -> Option<AbsolutePathBuf> {
         let checkout_root = self.checkout_root.as_ref()?;
         let repo_root = self.repo_root.as_ref()?;
         // Regular checkouts resolve both paths to the same root; linked worktrees do not.
@@ -912,7 +917,7 @@ impl ProjectTrustContext {
         }
 
         let relative_dir = dir.as_path().strip_prefix(checkout_root.as_path()).ok()?;
-        Some(repo_root.join(relative_dir).join(".codex"))
+        Some(repo_root.join(relative_dir).join(project_config_dir))
     }
 }
 
@@ -1221,107 +1226,112 @@ async fn load_project_layers(
     let mut layers = Vec::new();
     let mut startup_warnings = Vec::new();
     for dir in dirs {
-        let dot_codex_abs = dir.join(".codex");
-        let dot_codex_uri = PathUri::from_abs_path(&dot_codex_abs);
-        if !fs
-            .get_metadata(&dot_codex_uri, /*sandbox*/ None)
-            .await
-            .map(|metadata| metadata.is_directory)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let decision = trust_context.decision_for_dir(&dir);
-        let disabled_reason = trust_context.disabled_reason_for_decision(&decision);
-        let hooks_config_folder_override = trust_context.root_checkout_hooks_folder_for_dir(&dir);
-        let dot_codex_normalized =
-            normalize_path(dot_codex_abs.as_path()).unwrap_or_else(|_| dot_codex_abs.to_path_buf());
-        if dot_codex_abs == codex_home_abs || dot_codex_normalized == codex_home_normalized {
-            continue;
-        }
-        let config_file = dot_codex_abs.join(CONFIG_TOML_FILE);
-        let config_file_uri = PathUri::from_abs_path(&config_file);
-        match fs.read_file_text(&config_file_uri, /*sandbox*/ None).await {
-            Ok(contents) => {
-                let config: TomlValue = match toml::from_str(&contents) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        if decision.is_trusted() {
-                            let config_file_display = config_file.as_path().display();
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "Error parsing project config file {config_file_display}: {e}"
-                                ),
-                            ));
-                        }
-                        layers.push(project_layer_entry(
-                            &dot_codex_abs,
-                            TomlValue::Table(toml::map::Map::new()),
-                            disabled_reason.clone(),
-                            hooks_config_folder_override.clone(),
-                        ));
-                        continue;
-                    }
-                };
-                let mut config = config;
-                if disabled_reason.is_none() && strict_config {
-                    validate_config_toml_strictly(
-                        config_file.as_path(),
-                        &contents,
-                        &config,
-                        dot_codex_abs.as_path(),
-                    )?;
-                }
-                let ignored_project_config_keys = sanitize_project_config(&mut config);
-                let config =
-                    resolve_relative_paths_in_config_toml(config, dot_codex_abs.as_path())?;
-                let config = merge_root_checkout_project_hooks(
-                    fs,
-                    config,
-                    hooks_config_folder_override.as_ref(),
-                    decision.is_trusted(),
-                )
-                .await?;
-                if disabled_reason.is_none() && !ignored_project_config_keys.is_empty() {
-                    startup_warnings.push(project_ignored_config_keys_warning(
-                        &dot_codex_abs,
-                        &ignored_project_config_keys,
-                    ));
-                }
-                let entry = project_layer_entry(
-                    &dot_codex_abs,
-                    config,
-                    disabled_reason.clone(),
-                    hooks_config_folder_override.clone(),
-                );
-                layers.push(entry);
+        for project_config_dir in [".codex", codex_akram_identity::PROJECT_OVERLAY_DIR] {
+            let dot_codex_abs = dir.join(project_config_dir);
+            let dot_codex_uri = PathUri::from_abs_path(&dot_codex_abs);
+            if !fs
+                .get_metadata(&dot_codex_uri, /*sandbox*/ None)
+                .await
+                .map(|metadata| metadata.is_directory)
+                .unwrap_or(false)
+            {
+                continue;
             }
-            Err(err) => {
-                if err.kind() == io::ErrorKind::NotFound {
-                    // If there is no config.toml file, record an empty entry
-                    // for this project layer, as this may still have subfolders
-                    // that are significant in the overall ConfigLayerStack.
+
+            let decision = trust_context.decision_for_dir(&dir);
+            let disabled_reason = trust_context.disabled_reason_for_decision(&decision);
+            let hooks_config_folder_override =
+                trust_context.root_checkout_hooks_folder_for_dir(&dir, project_config_dir);
+            let dot_codex_normalized = normalize_path(dot_codex_abs.as_path())
+                .unwrap_or_else(|_| dot_codex_abs.to_path_buf());
+            if dot_codex_abs == codex_home_abs || dot_codex_normalized == codex_home_normalized {
+                continue;
+            }
+            let config_file = dot_codex_abs.join(CONFIG_TOML_FILE);
+            let config_file_uri = PathUri::from_abs_path(&config_file);
+            match fs.read_file_text(&config_file_uri, /*sandbox*/ None).await {
+                Ok(contents) => {
+                    let config: TomlValue = match toml::from_str(&contents) {
+                        Ok(config) => config,
+                        Err(e) => {
+                            if decision.is_trusted() {
+                                let config_file_display = config_file.as_path().display();
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "Error parsing project config file {config_file_display}: {e}"
+                                    ),
+                                ));
+                            }
+                            layers.push(project_layer_entry(
+                                &dot_codex_abs,
+                                TomlValue::Table(toml::map::Map::new()),
+                                disabled_reason.clone(),
+                                hooks_config_folder_override.clone(),
+                            ));
+                            continue;
+                        }
+                    };
+                    let mut config = config;
+                    if disabled_reason.is_none() && strict_config {
+                        validate_config_toml_strictly(
+                            config_file.as_path(),
+                            &contents,
+                            &config,
+                            dot_codex_abs.as_path(),
+                        )?;
+                    }
+                    let ignored_project_config_keys = sanitize_project_config(&mut config);
+                    let config =
+                        resolve_relative_paths_in_config_toml(config, dot_codex_abs.as_path())?;
                     let config = merge_root_checkout_project_hooks(
                         fs,
-                        TomlValue::Table(toml::map::Map::new()),
+                        config,
                         hooks_config_folder_override.as_ref(),
                         decision.is_trusted(),
                     )
                     .await?;
-                    layers.push(project_layer_entry(
+                    if disabled_reason.is_none() && !ignored_project_config_keys.is_empty() {
+                        startup_warnings.push(project_ignored_config_keys_warning(
+                            &dot_codex_abs,
+                            &ignored_project_config_keys,
+                        ));
+                    }
+                    let entry = project_layer_entry(
                         &dot_codex_abs,
                         config,
-                        disabled_reason,
-                        hooks_config_folder_override,
-                    ));
-                } else {
-                    let config_file_display = config_file.as_path().display();
-                    return Err(io::Error::new(
-                        err.kind(),
-                        format!("Failed to read project config file {config_file_display}: {err}"),
-                    ));
+                        disabled_reason.clone(),
+                        hooks_config_folder_override.clone(),
+                    );
+                    layers.push(entry);
+                }
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::NotFound {
+                        // If there is no config.toml file, record an empty entry
+                        // for this project layer, as this may still have subfolders
+                        // that are significant in the overall ConfigLayerStack.
+                        let config = merge_root_checkout_project_hooks(
+                            fs,
+                            TomlValue::Table(toml::map::Map::new()),
+                            hooks_config_folder_override.as_ref(),
+                            decision.is_trusted(),
+                        )
+                        .await?;
+                        layers.push(project_layer_entry(
+                            &dot_codex_abs,
+                            config,
+                            disabled_reason,
+                            hooks_config_folder_override,
+                        ));
+                    } else {
+                        let config_file_display = config_file.as_path().display();
+                        return Err(io::Error::new(
+                            err.kind(),
+                            format!(
+                                "Failed to read project config file {config_file_display}: {err}"
+                            ),
+                        ));
+                    }
                 }
             }
         }

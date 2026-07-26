@@ -43,6 +43,8 @@ fn assert_seatbelt_denied(stderr: &[u8], path: &Path) {
     let expected = format!("bash: {}: Operation not permitted\n", path.display());
     assert!(
         stderr == expected
+            || (stderr.contains(&path.display().to_string())
+                && stderr.ends_with(": Operation not permitted\n"))
             || stderr.contains("sandbox-exec: sandbox_apply: Operation not permitted"),
         "unexpected stderr: {stderr}"
     );
@@ -254,7 +256,8 @@ fn explicit_unreadable_paths_are_excluded_from_full_disk_read_and_write_access()
         vec![
             "-DWRITABLE_ROOT_0=/".to_string(),
             "-DWRITABLE_ROOT_0_EXCLUDED_0=/.codex".to_string(),
-            format!("-DWRITABLE_ROOT_0_EXCLUDED_1={}", unreadable_root.display()),
+            "-DWRITABLE_ROOT_0_EXCLUDED_1=/.codex-akram".to_string(),
+            format!("-DWRITABLE_ROOT_0_EXCLUDED_2={}", unreadable_root.display()),
         ],
         "unexpected write carveout parameters in args: {args:#?}"
     );
@@ -976,11 +979,18 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
             "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".git")
+                .join(".codex-akram")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
+            cwd.canonicalize()
+                .expect("canonicalize cwd")
+                .join(".git")
+                .display()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
                 .join(".agents")

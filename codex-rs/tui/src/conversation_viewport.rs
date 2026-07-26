@@ -38,6 +38,7 @@ pub(crate) struct ConversationViewport {
     cells: Vec<Arc<dyn HistoryCell>>,
     render_mode: HistoryRenderMode,
     live_tail_key: Option<LiveTailKey>,
+    live_tail_dismisses_welcome: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +56,7 @@ impl ConversationViewport {
             cells: Vec::new(),
             render_mode,
             live_tail_key: None,
+            live_tail_dismisses_welcome: false,
         }
     }
 
@@ -62,8 +64,16 @@ impl ConversationViewport {
         self.content.render_bottom_aligned(area, buf);
     }
 
+    pub(crate) fn render_over(&mut self, area: Rect, buf: &mut Buffer) {
+        self.content.render_bottom_aligned_over(area, buf);
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.content.is_empty()
+    }
+
+    pub(crate) fn dismisses_welcome(&self) -> bool {
+        self.cells.iter().any(|cell| cell.dismisses_welcome()) || self.live_tail_dismisses_welcome
     }
 
     pub(crate) fn scroll(&mut self, direction: ScrollDirection) {
@@ -121,6 +131,7 @@ impl ConversationViewport {
         &mut self,
         width: u16,
         active_key: Option<ActiveCellTranscriptKey>,
+        dismisses_welcome: bool,
         compute_lines: impl FnOnce(u16) -> Option<Vec<HyperlinkLine>>,
     ) {
         let next_key = active_key.map(|key| LiveTailKey {
@@ -129,16 +140,18 @@ impl ConversationViewport {
             is_stream_continuation: key.is_stream_continuation,
             animation_tick: key.animation_tick,
         });
-        if self.live_tail_key == next_key {
+        if self.live_tail_key == next_key && self.live_tail_dismisses_welcome == dismisses_welcome {
             return;
         }
 
         let follow_bottom = self.content.is_following_bottom();
         self.take_live_tail_renderable();
         self.live_tail_key = next_key;
+        self.live_tail_dismisses_welcome = false;
         if let Some(key) = next_key {
             let lines = compute_lines(width).unwrap_or_default();
             if !lines.is_empty() {
+                self.live_tail_dismisses_welcome = dismisses_welcome;
                 self.content.push(Self::live_tail_renderable(
                     lines,
                     !self.cells.is_empty(),
@@ -321,6 +334,68 @@ mod tests {
         viewport.replace_cells(vec![message]);
 
         assert!(!viewport.is_empty());
+        assert!(viewport.dismisses_welcome());
+    }
+
+    #[test]
+    fn startup_warning_does_not_hide_the_welcome() {
+        let mut viewport =
+            ConversationViewport::new(HistoryRenderMode::Rich, RuntimeKeymap::defaults().pager);
+        let warning: Arc<dyn HistoryCell> = Arc::new(crate::history_cell::new_warning_event(
+            "MCP startup failed".to_string(),
+        ));
+
+        viewport.replace_cells(vec![warning]);
+
+        assert!(!viewport.is_empty());
+        assert!(!viewport.dismisses_welcome());
+    }
+
+    #[test]
+    fn background_live_tail_does_not_hide_the_welcome() {
+        let mut viewport =
+            ConversationViewport::new(HistoryRenderMode::Rich, RuntimeKeymap::defaults().pager);
+        let key = ActiveCellTranscriptKey {
+            revision: 1,
+            is_stream_continuation: false,
+            animation_tick: None,
+        };
+
+        viewport.sync_live_tail(80, Some(key), /*dismisses_welcome*/ false, |_| {
+            Some(vec![HyperlinkLine::from("Starting MCP servers")])
+        });
+
+        assert!(!viewport.is_empty());
+        assert!(!viewport.dismisses_welcome());
+
+        viewport.sync_live_tail(80, Some(key), /*dismisses_welcome*/ true, |_| {
+            Some(vec![HyperlinkLine::from("Working")])
+        });
+
+        assert!(viewport.dismisses_welcome());
+    }
+
+    #[test]
+    fn background_content_renders_over_the_welcome_without_clearing_it() {
+        let mut viewport =
+            ConversationViewport::new(HistoryRenderMode::Rich, RuntimeKeymap::defaults().pager);
+        let warning: Arc<dyn HistoryCell> = Arc::new(crate::history_cell::new_warning_event(
+            "MCP startup failed".to_string(),
+        ));
+        viewport.replace_cells(vec![warning]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buffer = Buffer::empty(area);
+        buffer[(0, 0)].set_symbol("W");
+
+        viewport.render_over(area, &mut buffer);
+
+        assert_eq!(buffer[(0, 0)].symbol(), "W");
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("MCP startup failed"));
     }
 
     #[test]

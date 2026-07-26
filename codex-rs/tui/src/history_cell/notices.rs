@@ -85,8 +85,29 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     }
 }
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn new_warning_event(message: String) -> PrefixedWrappedHistoryCell {
-    PrefixedWrappedHistoryCell::new(message.yellow(), "⚠ ".yellow(), "  ")
+pub(crate) fn new_warning_event(message: String) -> WarningHistoryCell {
+    WarningHistoryCell {
+        inner: PrefixedWrappedHistoryCell::new(message.yellow(), "⚠ ".yellow(), "  "),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct WarningHistoryCell {
+    inner: PrefixedWrappedHistoryCell,
+}
+
+impl HistoryCell for WarningHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.inner.display_lines(width)
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        self.inner.raw_lines()
+    }
+
+    fn dismisses_welcome(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]

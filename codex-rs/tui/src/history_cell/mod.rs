@@ -288,6 +288,11 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
         true
     }
 
+    /// Whether this cell represents content that should replace the empty-session welcome.
+    fn dismisses_welcome(&self) -> bool {
+        true
+    }
+
     fn is_stream_continuation(&self) -> bool {
         false
     }

@@ -59,16 +59,23 @@ impl OwnedScreen {
         );
 
         let active_key = chat_widget.active_cell_transcript_key();
+        let active_dismisses_welcome = chat_widget.active_cell_dismisses_welcome();
         self.viewport
             .set_render_mode(chat_widget.history_render_mode());
         self.viewport
-            .sync_live_tail(area.width, active_key, |width| {
+            .sync_live_tail(area.width, active_key, active_dismisses_welcome, |width| {
                 chat_widget.active_cell_display_hyperlink_lines(width)
             });
-        if self.viewport.is_empty() {
+        let shows_welcome = !self.viewport.dismisses_welcome();
+        if shows_welcome {
             self.welcome.render(canvas, buf);
-        } else {
-            self.viewport.render(canvas, buf);
+        }
+        if !self.viewport.is_empty() {
+            if shows_welcome {
+                self.viewport.render_over(canvas, buf);
+            } else {
+                self.viewport.render(canvas, buf);
+            }
         }
 
         bottom_pane.render(bottom, buf);

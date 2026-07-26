@@ -128,6 +128,10 @@ impl HistoryCell for SessionInfoCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         self.0.raw_lines()
     }
+
+    fn dismisses_welcome(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn new_session_info(

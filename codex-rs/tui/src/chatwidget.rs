@@ -1948,6 +1948,26 @@ impl ChatWidget {
         (!lines.is_empty()).then_some(lines)
     }
 
+    pub(crate) fn active_cell_dismisses_welcome(&self) -> bool {
+        let active = self
+            .transcript
+            .active_cell
+            .as_deref()
+            .filter(|cell| !crate::conversation_viewport::is_session_metadata(*cell));
+        active.is_some_and(HistoryCell::dismisses_welcome)
+            || self
+                .active_hook_cell
+                .as_ref()
+                .filter(|cell| cell.should_render())
+                .is_some_and(HistoryCell::dismisses_welcome)
+            || self
+                .pending_token_activity_output()
+                .is_some_and(HistoryCell::dismisses_welcome)
+            || self
+                .pending_rate_limit_reset_hint()
+                .is_some_and(HistoryCell::dismisses_welcome)
+    }
+
     /// Keep active-cell wrapping synchronized with an application-owned full-width render.
     pub(crate) fn update_owned_screen_width(&mut self, width: u16) {
         if self.last_rendered_width.get() != Some(width as usize) {

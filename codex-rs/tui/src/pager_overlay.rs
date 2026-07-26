@@ -351,8 +351,13 @@ impl PagerView {
 
     /// Render only scrollable content, without pager chrome or empty-row markers.
     fn render_content_only(&mut self, area: Rect, buf: &mut Buffer) {
-        let follow_bottom = self.is_scrolled_to_bottom();
         Clear.render(area, buf);
+        self.render_content_only_over(area, buf);
+    }
+
+    /// Render only scrollable content while preserving content already drawn behind it.
+    fn render_content_only_over(&mut self, area: Rect, buf: &mut Buffer) {
+        let follow_bottom = self.is_scrolled_to_bottom();
         self.update_last_content_height(area.height);
         let content_height = self.content_height(area.width);
         self.last_rendered_height = Some(content_height);
@@ -437,6 +442,10 @@ impl PagerContent {
 
     pub(crate) fn render_bottom_aligned(&mut self, area: Rect, buf: &mut Buffer) {
         self.view.render_content_only(area, buf);
+    }
+
+    pub(crate) fn render_bottom_aligned_over(&mut self, area: Rect, buf: &mut Buffer) {
+        self.view.render_content_only_over(area, buf);
     }
 
     pub(crate) fn replace(&mut self, renderables: Vec<Box<dyn Renderable>>) {

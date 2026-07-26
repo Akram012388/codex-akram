@@ -18,8 +18,10 @@ use crossterm::SynchronizedUpdate;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
+use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::EnableFocusChange;
+use crossterm::event::EnableMouseCapture;
 use crossterm::event::KeyEvent;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
@@ -65,6 +67,12 @@ pub(crate) mod test_support;
 
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
+
+/// Tracks whether this process currently owns the physical alternate-screen buffer.
+///
+/// This is deliberately process-global so the panic/exit restoration path can recover the
+/// terminal even when the owning [`Tui`] value is no longer reachable.
+static PHYSICAL_ALT_SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// A type alias for the terminal type used in this application
 pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
@@ -247,6 +255,47 @@ impl Command for DisableAlternateScroll {
     }
 }
 
+fn enter_physical_alt_screen(terminal: &mut Terminal) -> Result<()> {
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    PHYSICAL_ALT_SCREEN_ACTIVE.store(true, Ordering::Release);
+    // Keyboard-protocol flags may be screen-local in terminal emulators and multiplexers.
+    // Reapply them after switching buffers so modified Enter reaches the child distinctly.
+    keyboard_modes::enable_keyboard_enhancement();
+    if let Err(err) = execute!(terminal.backend_mut(), EnableAlternateScroll) {
+        let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+        PHYSICAL_ALT_SCREEN_ACTIVE.store(false, Ordering::Release);
+        return Err(err);
+    }
+    if let Err(err) = execute!(terminal.backend_mut(), EnableMouseCapture) {
+        let _ = execute!(terminal.backend_mut(), DisableAlternateScroll);
+        let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+        PHYSICAL_ALT_SCREEN_ACTIVE.store(false, Ordering::Release);
+        return Err(err);
+    }
+    if let Ok(size) = terminal.size() {
+        terminal.set_viewport_area(Rect::new(0, 0, size.width, size.height));
+        terminal.clear()?;
+    }
+    Ok(())
+}
+
+fn leave_physical_alt_screen(writer: &mut impl Write) -> Result<()> {
+    if !PHYSICAL_ALT_SCREEN_ACTIVE.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let mouse_result = execute!(writer, DisableMouseCapture);
+    let disable_result = execute!(writer, DisableAlternateScroll);
+    let leave_result = execute!(writer, LeaveAlternateScreen);
+    if leave_result.is_ok() {
+        PHYSICAL_ALT_SCREEN_ACTIVE.store(false, Ordering::Release);
+    }
+    mouse_result.and(disable_result).and(leave_result)
+}
+
+fn restore_physical_alt_screen(writer: &mut impl Write) -> Result<()> {
+    leave_physical_alt_screen(writer)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RawModeRestore {
     Disable,
@@ -315,8 +364,10 @@ pub(super) fn reapply_raw_mode_after_resume() -> Result<()> {
 /// Uses a stronger keyboard reset than [`restore`] so the parent shell recovers even if a
 /// terminal missed the stack pop that normally pairs with [`set_modes`].
 pub fn restore_after_exit() -> Result<()> {
-    let mut first_error =
-        restore_common(RawModeRestore::Disable, KeyboardRestore::ResetAfterExit).err();
+    let mut first_error = restore_physical_alt_screen(&mut stdout()).err();
+    if let Err(err) = restore_common(RawModeRestore::Disable, KeyboardRestore::ResetAfterExit) {
+        first_error.get_or_insert(err);
+    }
     if let Err(err) = terminal_stderr::finish() {
         first_error.get_or_insert(err);
     }
@@ -530,6 +581,8 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
+    /// A mouse-wheel gesture captured while the alternate-screen UI owns the terminal.
+    Scroll(ScrollDirection),
     /// A terminal size notification that should be handled as resize-sensitive draw work.
     ///
     /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without
@@ -537,6 +590,12 @@ pub enum TuiEvent {
     Resize,
     /// A scheduled repaint that does not necessarily correspond to a terminal size change.
     Draw,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScrollDirection {
+    Up,
+    Down,
 }
 
 pub struct Tui {
@@ -548,6 +607,7 @@ pub struct Tui {
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
     alt_saved_viewport: Option<ratatui::layout::Rect>,
+    alt_screen_owners: usize,
     #[cfg(unix)]
     suspend_context: SuspendContext,
     // True when overlay alt-screen UI is active
@@ -605,6 +665,7 @@ impl Tui {
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
             alt_saved_viewport: None,
+            alt_screen_owners: 0,
             #[cfg(unix)]
             suspend_context: SuspendContext::new(),
             alt_screen_active: Arc::new(AtomicBool::new(false)),
@@ -668,10 +729,11 @@ impl Tui {
         // Pause crossterm events to avoid stdin conflicts with external program `f`.
         self.pause_events();
 
-        // Leave alt screen if active to avoid conflicts with external program `f`.
+        // Temporarily leave the physical alt screen without releasing logical ownership. This
+        // matters in full-screen mode, where overlays may add nested owners.
         let was_alt_screen = self.is_alt_screen_active();
         if was_alt_screen {
-            let _ = self.leave_alt_screen();
+            let _ = self.suspend_physical_alt_screen();
         }
 
         if let Err(err) = mode.restore() {
@@ -693,7 +755,7 @@ impl Tui {
         flush_terminal_input_buffer();
 
         if was_alt_screen {
-            let _ = self.enter_alt_screen();
+            let _ = self.resume_physical_alt_screen();
         }
 
         self.resume_events();
@@ -752,19 +814,11 @@ impl Tui {
         if !self.alt_screen_enabled {
             return Ok(());
         }
-        let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);
-        // Enable "alternate scroll" so terminals may translate wheel to arrows
-        let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
-        if let Ok(size) = self.terminal.size() {
+        if self.alt_screen_owners == 0 {
             self.alt_saved_viewport = Some(self.terminal.viewport_area);
-            self.terminal.set_viewport_area(ratatui::layout::Rect::new(
-                0,
-                0,
-                size.width,
-                size.height,
-            ));
-            let _ = self.terminal.clear();
+            enter_physical_alt_screen(&mut self.terminal)?;
         }
+        self.alt_screen_owners = self.alt_screen_owners.saturating_add(1);
         self.alt_screen_active.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -774,14 +828,43 @@ impl Tui {
         if !self.alt_screen_enabled {
             return Ok(());
         }
-        // Disable alternate scroll when leaving alt-screen
-        let _ = execute!(self.terminal.backend_mut(), DisableAlternateScroll);
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        if self.alt_screen_owners == 0 {
+            return Ok(());
+        }
+        self.alt_screen_owners -= 1;
+        if self.alt_screen_owners == 0 {
+            leave_physical_alt_screen(self.terminal.backend_mut())?;
+            if let Some(saved) = self.alt_saved_viewport.take() {
+                self.terminal.set_viewport_area(saved);
+            }
+            self.alt_screen_active.store(false, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Release every logical alternate-screen owner and restore the saved inline viewport.
+    pub fn finish_alt_screen(&mut self) -> Result<()> {
+        if self.alt_screen_owners == 0 {
+            return Ok(());
+        }
+        self.alt_screen_owners = 0;
+        leave_physical_alt_screen(self.terminal.backend_mut())?;
         if let Some(saved) = self.alt_saved_viewport.take() {
             self.terminal.set_viewport_area(saved);
         }
         self.alt_screen_active.store(false, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn suspend_physical_alt_screen(&mut self) -> Result<()> {
+        leave_physical_alt_screen(self.terminal.backend_mut())
+    }
+
+    fn resume_physical_alt_screen(&mut self) -> Result<()> {
+        if self.alt_screen_owners == 0 {
+            return Ok(());
+        }
+        enter_physical_alt_screen(&mut self.terminal)
     }
 
     pub fn insert_history_lines(&mut self, lines: Vec<Line<'static>>) {

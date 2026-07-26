@@ -15,6 +15,12 @@ impl App {
             tui.frame_requester().schedule_frame();
         }
         self.transcript_cells.push(cell.clone());
+        if self.has_owned_screen() {
+            tui.clear_pending_history_lines();
+            tui.frame_requester().schedule_frame();
+            self.chat_widget.request_pending_usage_output_insertion();
+            return;
+        }
         if self.initial_history_replay_buffer.as_ref().is_some() {
             self.insert_history_cell_lines_with_initial_replay_buffer(
                 tui,
@@ -115,6 +121,24 @@ impl App {
     }
 
     pub(super) fn queue_clear_ui_header(&mut self, tui: &mut tui::Tui) {
+        if self.has_owned_screen() {
+            let header: Arc<dyn HistoryCell> = Arc::new(
+                history_cell::SessionHeaderHistoryCell::new(
+                    self.chat_widget.current_model().to_string(),
+                    self.chat_widget.current_reasoning_effort(),
+                    self.chat_widget.should_show_fast_status(
+                        self.chat_widget.current_model(),
+                        self.chat_widget.current_service_tier(),
+                    ),
+                    self.config.cwd.to_path_buf(),
+                    CODEX_CLI_VERSION,
+                )
+                .with_yolo_mode(history_cell::is_yolo_mode(&self.config)),
+            );
+            self.transcript_cells.push(header);
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         let width = self
             .chat_widget
             .history_wrap_width(tui.terminal.last_known_screen_size.width);

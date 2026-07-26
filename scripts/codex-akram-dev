@@ -14,8 +14,13 @@ done
 
 script_dir=$(CDPATH= cd -P -- "$(dirname -- "$script_path")" && pwd)
 repo_root=$(CDPATH= cd -P -- "$script_dir/.." && pwd)
+dev_binary="$repo_root/codex-rs/target/debug/codex-akram"
 
-CODEX_AKRAM_HOME="${CODEX_AKRAM_HOME:-$HOME/.codex-akram-dev}" exec cargo run \
-  --manifest-path "$repo_root/codex-rs/Cargo.toml" \
-  --bin codex-akram \
-  -- "$@"
+if [ ! -x "$dev_binary" ]; then
+  echo "codex-akram-dev is not built; building it once..." >&2
+  cargo build \
+    --manifest-path "$repo_root/codex-rs/Cargo.toml" \
+    --bin codex-akram
+fi
+
+CODEX_AKRAM_HOME="${CODEX_AKRAM_HOME:-$HOME/.codex-akram-dev}" exec "$dev_binary" "$@"

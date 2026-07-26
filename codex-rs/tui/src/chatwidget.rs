@@ -1912,6 +1912,49 @@ impl ChatWidget {
         (!lines.is_empty()).then_some(lines)
     }
 
+    /// Returns the active cells' main-viewport lines for the owned full-screen surface.
+    pub(crate) fn active_cell_display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Option<Vec<HyperlinkLine>> {
+        let mode = self.history_render_mode();
+        let mut lines = Vec::new();
+        let mut append = |cell: &dyn HistoryCell| {
+            if crate::conversation_viewport::is_session_metadata(cell) {
+                return;
+            }
+            let cell_lines = cell.display_hyperlink_lines_for_mode(width, mode);
+            if !cell_lines.is_empty() && !lines.is_empty() {
+                lines.push(HyperlinkLine::from(""));
+            }
+            lines.extend(cell_lines);
+        };
+        if let Some(cell) = self.transcript.active_cell.as_deref() {
+            append(cell);
+        }
+        if let Some(cell) = self
+            .active_hook_cell
+            .as_ref()
+            .filter(|cell| cell.should_render())
+        {
+            append(cell);
+        }
+        if let Some(cell) = self.pending_token_activity_output() {
+            append(cell);
+        }
+        if let Some(cell) = self.pending_rate_limit_reset_hint() {
+            append(cell);
+        }
+        (!lines.is_empty()).then_some(lines)
+    }
+
+    /// Keep active-cell wrapping synchronized with an application-owned full-width render.
+    pub(crate) fn update_owned_screen_width(&mut self, width: u16) {
+        if self.last_rendered_width.get() != Some(width as usize) {
+            self.on_terminal_resize(width);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn active_cell_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
         self.active_cell_transcript_hyperlink_lines(width)

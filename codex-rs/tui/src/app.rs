@@ -3,6 +3,7 @@
 //! This module owns the `App` struct, shared imports, and the high-level run loop that coordinates
 //! the focused app submodules.
 
+use crate::AltScreenBehavior;
 use crate::AppServerTarget;
 use crate::app_backtrack::BacktrackState;
 use crate::app_command::AppCommand;
@@ -50,6 +51,7 @@ use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::hooks_rpc::HookTrustUpdate;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::primary_binding;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
@@ -211,6 +213,7 @@ mod event_dispatch;
 mod history_ui;
 mod input;
 mod loaded_threads;
+mod owned_screen;
 mod pending_interactive_replay;
 mod pets;
 mod platform_actions;
@@ -218,6 +221,7 @@ mod plugin_mentions;
 mod replay_filter;
 mod resize_reflow;
 mod safety_buffering;
+use owned_screen::OwnedScreen;
 mod session_lifecycle;
 mod side;
 mod startup_prompts;
@@ -525,6 +529,9 @@ pub(crate) struct App {
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
 
+    /// Retained full-screen conversation surface. `None` preserves legacy inline rendering.
+    owned_screen: Option<Box<OwnedScreen>>,
+
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
     pub(crate) deferred_history_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
@@ -730,6 +737,10 @@ fn active_turn_interrupt_race(error: &TypedRequestError) -> Option<String> {
 }
 
 impl App {
+    pub(super) fn has_owned_screen(&self) -> bool {
+        self.owned_screen.is_some()
+    }
+
     pub fn chatwidget_init_for_forked_or_resumed_thread(
         &self,
         tui: &mut tui::Tui,
@@ -765,6 +776,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub async fn run(
         tui: &mut tui::Tui,
+        alt_screen_behavior: AltScreenBehavior,
         mut app_server: AppServerSession,
         mut config: Config,
         launch_cwd: PathBuf,
@@ -1023,6 +1035,15 @@ Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
             )
         })?;
+        let owned_screen = matches!(alt_screen_behavior, AltScreenBehavior::Owned).then(|| {
+            Box::new(OwnedScreen::new(
+                runtime_keymap.pager.clone(),
+                tui.frame_requester(),
+                config.animations,
+                primary_binding(&runtime_keymap.app.open_transcript),
+                primary_binding(&runtime_keymap.composer.toggle_shortcuts),
+            ))
+        });
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
@@ -1045,6 +1066,7 @@ See the Codex keymap documentation for supported actions and examples."
             enhanced_keys_supported,
             keymap: runtime_keymap,
             transcript_cells: Vec::new(),
+            owned_screen,
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -1304,6 +1326,13 @@ See the Codex keymap documentation for supported actions and examples."
                     let pasted = pasted.replace("\r", "\n");
                     self.chat_widget.handle_paste(pasted);
                 }
+                TuiEvent::Scroll(direction) => {
+                    if let Some(screen) = self.owned_screen.as_mut() {
+                        screen.viewport.scroll(direction);
+                        tui.frame_requester()
+                            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                    }
+                }
                 TuiEvent::Draw | TuiEvent::Resize => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui)?;
@@ -1364,6 +1393,21 @@ See the Codex keymap documentation for supported actions and examples."
     }
 
     fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui) -> Result<Rect> {
+        if let Some(screen) = self.owned_screen.as_mut() {
+            let cells = self.transcript_cells.clone();
+            screen.viewport.replace_cells_if_changed(&cells);
+            let mut rendered_area = Rect::default();
+            tui.draw(u16::MAX, |frame| {
+                rendered_area = frame.area();
+                let bottom = screen.render(frame.area(), frame.buffer, &mut self.chat_widget);
+                let pane = self.chat_widget.bottom_pane_renderable();
+                if let Some((x, y)) = pane.cursor_pos(bottom) {
+                    frame.set_cursor_style(pane.cursor_style(bottom));
+                    frame.set_cursor_position((x, y));
+                }
+            })?;
+            return Ok(rendered_area);
+        }
         let width = tui.terminal.size()?.width;
         self.with_chat_widget_frame(width, |desired_height, chat_widget| {
             let mut rendered_area = Rect::default();

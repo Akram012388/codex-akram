@@ -33,6 +33,7 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
 use crate::terminal_hyperlinks::visible_lines_ref;
 use crate::tui;
+use crate::tui::ScrollDirection;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -169,7 +170,12 @@ impl PagerView {
             .scroll_offset
             .min(content_height.saturating_sub(content_area.height as usize));
 
-        self.render_content(content_area, buf);
+        self.render_content(
+            content_area,
+            buf,
+            /*empty_row_marker*/ Some('~'),
+            /*top_padding*/ 0,
+        );
 
         self.render_bottom_bar(area, content_area, buf, content_height);
     }
@@ -182,8 +188,15 @@ impl PagerView {
         header.dim().render_ref(area, buf);
     }
 
-    fn render_content(&self, area: Rect, buf: &mut Buffer) {
-        let mut y = -(self.scroll_offset as isize);
+    fn render_content(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        empty_row_marker: Option<char>,
+        top_padding: u16,
+    ) {
+        let mut y = isize::try_from(top_padding).unwrap_or(isize::MAX)
+            - isize::try_from(self.scroll_offset).unwrap_or(isize::MAX);
         let mut drawn_bottom = area.y;
         for renderable in &self.renderables {
             let top = y;
@@ -207,11 +220,14 @@ impl PagerView {
             }
         }
 
+        let Some(empty_row_marker) = empty_row_marker else {
+            return;
+        };
         for y in drawn_bottom..area.bottom() {
             if area.width == 0 {
                 break;
             }
-            buf[(area.x, y)] = Cell::from('~');
+            buf[(area.x, y)] = Cell::from(empty_row_marker);
             for x in area.x + 1..area.right() {
                 buf[(x, y)] = Cell::from(' ');
             }
@@ -253,10 +269,10 @@ impl PagerView {
     fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) -> Result<()> {
         match key_event {
             e if self.keymap.scroll_up.is_pressed(e) => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                self.scroll_lines(ScrollDirection::Up, 1);
             }
             e if self.keymap.scroll_down.is_pressed(e) => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                self.scroll_lines(ScrollDirection::Down, 1);
             }
             e if self.keymap.page_up.is_pressed(e) => {
                 let page_height = self.page_height(tui.terminal.viewport_area);
@@ -291,6 +307,27 @@ impl PagerView {
         Ok(())
     }
 
+    fn scroll_lines(&mut self, direction: ScrollDirection, rows: usize) {
+        let max_scroll = self
+            .last_rendered_height
+            .zip(self.last_content_height)
+            .map(|(total, visible)| total.saturating_sub(visible));
+        match direction {
+            ScrollDirection::Up => {
+                let current = max_scroll
+                    .map(|max| self.scroll_offset.min(max))
+                    .unwrap_or(self.scroll_offset);
+                self.scroll_offset = current.saturating_sub(rows);
+            }
+            ScrollDirection::Down => {
+                self.scroll_offset = self.scroll_offset.saturating_add(rows);
+                if let Some(max) = max_scroll {
+                    self.scroll_offset = self.scroll_offset.min(max);
+                }
+            }
+        }
+    }
+
     /// Returns the height of one page in content rows.
     ///
     /// Prefers the last rendered content height (excluding header/footer chrome);
@@ -310,6 +347,27 @@ impl PagerView {
         area.y = area.y.saturating_add(1);
         area.height = area.height.saturating_sub(2);
         area
+    }
+
+    /// Render only scrollable content, without pager chrome or empty-row markers.
+    fn render_content_only(&mut self, area: Rect, buf: &mut Buffer) {
+        let follow_bottom = self.is_scrolled_to_bottom();
+        Clear.render(area, buf);
+        self.update_last_content_height(area.height);
+        let content_height = self.content_height(area.width);
+        self.last_rendered_height = Some(content_height);
+        if let Some(idx) = self.pending_scroll_chunk.take() {
+            self.ensure_chunk_visible(idx, area);
+        } else if follow_bottom {
+            self.scroll_offset = usize::MAX;
+        }
+        self.scroll_offset = self
+            .scroll_offset
+            .min(content_height.saturating_sub(area.height as usize));
+        let top_padding = area
+            .height
+            .saturating_sub(u16::try_from(content_height).unwrap_or(u16::MAX));
+        self.render_content(area, buf, /*empty_row_marker*/ None, top_padding);
     }
 }
 
@@ -357,6 +415,60 @@ impl PagerView {
         } else if last > current_bottom {
             self.scroll_offset = last.saturating_sub(area.height.saturating_sub(1) as usize);
         }
+    }
+}
+
+/// Scrollable retained content used by the application-owned full-screen viewport.
+pub(crate) struct PagerContent {
+    view: PagerView,
+}
+
+impl PagerContent {
+    pub(crate) fn new(renderables: Vec<Box<dyn Renderable>>, keymap: PagerKeymap) -> Self {
+        Self {
+            view: PagerView::new(
+                renderables,
+                /*title*/ String::new(),
+                /*scroll_offset*/ usize::MAX,
+                keymap,
+            ),
+        }
+    }
+
+    pub(crate) fn render_bottom_aligned(&mut self, area: Rect, buf: &mut Buffer) {
+        self.view.render_content_only(area, buf);
+    }
+
+    pub(crate) fn replace(&mut self, renderables: Vec<Box<dyn Renderable>>) {
+        self.view.renderables = renderables;
+    }
+
+    pub(crate) fn push(&mut self, renderable: Box<dyn Renderable>) {
+        self.view.renderables.push(renderable);
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<Box<dyn Renderable>> {
+        self.view.renderables.pop()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.view.renderables.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.view.renderables.is_empty()
+    }
+
+    pub(crate) fn is_following_bottom(&self) -> bool {
+        self.view.is_scrolled_to_bottom()
+    }
+
+    pub(crate) fn scroll_to_bottom(&mut self) {
+        self.view.scroll_offset = usize::MAX;
+    }
+
+    pub(crate) fn scroll(&mut self, direction: ScrollDirection, rows: usize) {
+        self.view.scroll_lines(direction, rows);
     }
 }
 
@@ -800,6 +912,12 @@ impl TranscriptOverlay {
                 }
                 other => self.view.handle_key_event(tui, other),
             },
+            TuiEvent::Scroll(direction) => {
+                self.view.scroll_lines(direction, 3);
+                tui.frame_requester()
+                    .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                Ok(())
+            }
             TuiEvent::Draw | TuiEvent::Resize => {
                 tui.draw(u16::MAX, |frame| {
                     self.render(frame.area(), frame.buffer);
@@ -898,6 +1016,12 @@ impl StaticOverlay {
                 }
                 other => self.view.handle_key_event(tui, other),
             },
+            TuiEvent::Scroll(direction) => {
+                self.view.scroll_lines(direction, 3);
+                tui.frame_requester()
+                    .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                Ok(())
+            }
             TuiEvent::Draw | TuiEvent::Resize => {
                 tui.draw(u16::MAX, |frame| {
                     self.render(frame.area(), frame.buffer);
@@ -1608,5 +1732,26 @@ mod tests {
             pv.is_scrolled_to_bottom(),
             "expected view to report at bottom after scrolling to end"
         );
+    }
+
+    #[test]
+    fn pager_content_wheel_scroll_leaves_and_returns_to_bottom() {
+        let mut content = PagerContent::new(
+            vec![paragraph_block("a", /*lines*/ 10)],
+            default_pager_keymap(),
+        );
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buf = Buffer::empty(area);
+
+        content.render_bottom_aligned(area, &mut buf);
+        assert!(content.is_following_bottom());
+
+        content.scroll(ScrollDirection::Up, 3);
+        assert_eq!(content.view.scroll_offset, 3);
+        assert!(!content.is_following_bottom());
+
+        content.scroll(ScrollDirection::Down, 3);
+        assert_eq!(content.view.scroll_offset, 6);
+        assert!(content.is_following_bottom());
     }
 }

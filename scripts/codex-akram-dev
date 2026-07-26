@@ -23,4 +23,6 @@ if [ ! -x "$dev_binary" ]; then
     --bin codex-akram
 fi
 
-CODEX_AKRAM_HOME="${CODEX_AKRAM_HOME:-$HOME/.codex-akram-dev}" exec "$dev_binary" "$@"
+CODEX_AKRAM_HOME="${CODEX_AKRAM_HOME:-$HOME/.codex-akram-dev}" \
+HERDR_AGENT=codex \
+exec "$dev_binary" "$@"
